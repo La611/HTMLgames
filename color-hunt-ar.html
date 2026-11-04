@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>色彩獵人 AR</title>
+<style>
+:root{--bg:#f4f1ea;--fg:#1d1b18;--card:rgba(255,255,255,.9);--ac:#ff5a36;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111;--fg:#f3efe8;--card:rgba(28,28,28,.88)}}
+:root[data-theme="dark"]{--bg:#111;--fg:#f3efe8;--card:rgba(28,28,28,.88)}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Noto Sans TC","PingFang TC",sans-serif;overflow:hidden}
+#stage{position:relative;width:100%;height:100%;overflow:hidden;background:#000}
+video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.hud{position:absolute;left:12px;right:12px;top:12px;display:flex;gap:8px;justify-content:space-between;align-items:center;z-index:3}
+.pill{background:var(--card);color:var(--fg);padding:8px 14px;border-radius:999px;font-weight:700;font-size:15px}
+#target{display:flex;align-items:center;gap:8px}
+#sw{width:20px;height:20px;border-radius:50%;border:2px solid var(--fg)}
+#bar{position:absolute;left:16px;right:16px;bottom:20px;height:10px;background:rgba(255,255,255,.3);border-radius:6px;overflow:hidden;z-index:3}
+#fill{height:100%;width:0;background:var(--ac)}
+#ov{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;background:var(--bg);color:var(--fg)}
+#ov h1{margin:0;font-size:30px}
+#ov p{margin:0;max-width:22em;line-height:1.6;opacity:.85}
+button{font:inherit;font-weight:700;font-size:18px;padding:14px 32px;border:0;border-radius:999px;background:var(--ac);color:#fff}
+#err{color:#d33;font-size:14px;min-height:1.2em}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="v" playsinline muted></video>
+  <canvas id="c"></canvas>
+  <div class="hud"><div class="pill" id="score">分數 0</div><div class="pill" id="target"><span id="sw"></span><span id="tn">—</span></div><div class="pill" id="time">60</div></div>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="ov">
+    <h1>🎯 色彩獵人</h1>
+    <p>用手機鏡頭在身邊找出指定顏色的物品，對準它並保持穩定，AR 偵測框會鎖定目標。60 秒內看你能找到幾個！</p>
+    <button id="go">開啟相機開始</button>
+    <div id="err"></div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const V=$('v'),C=$('c'),cx=C.getContext('2d'),S=document.createElement('canvas');
+S.width=64;S.height=48;const sx=S.getContext('2d',{willReadFrequently:true});
+const COLORS=[
+ {n:'紅色',hex:'#e53935',t:h=>h<14||h>346},
+ {n:'橘色',hex:'#fb8c00',t:h=>h>=16&&h<=38},
+ {n:'黃色',hex:'#fdd835',t:h=>h>=46&&h<=68},
+ {n:'綠色',hex:'#43a047',t:h=>h>=90&&h<=155},
+ {n:'藍色',hex:'#1e88e5',t:h=>h>=195&&h<=250},
+ {n:'紫色',hex:'#8e24aa',t:h=>h>=268&&h<=310}
+];
+let playing=false,score=0,left=60,cur=0,prog=0,last=0,parts=[],lastTick=0;
+function nextTarget(){let n;do{n=Math.floor(Math.random()*COLORS.length)}while(n===cur&&COLORS.length>1);cur=n;$('sw').style.background=COLORS[n].hex;$('tn').textContent='找出 '+COLORS[n].n;prog=0}
+function burst(x,y,col){for(let i=0;i<40;i++){const a=Math.random()*6.28,s=2+Math.random()*6;parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,col})}}
+function end(){playing=false;$('ov').style.display='flex';$('ov').querySelector('h1').textContent='時間到！';$('ov').querySelector('p').textContent='你找到了 '+score+' 個目標顏色。再挑戰一次吧！';$('go').textContent='再玩一次'}
+$('go').onclick=async()=>{
+  $('err').textContent='';
+  try{
+    if(!V.srcObject){
+      const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+      V.srcObject=st;
+    }
+    await V.play();
+  }catch(e){$('err').textContent='無法開啟相機：請允許相機權限，並用手機瀏覽器直接開啟此頁面。';return}
+  score=0;left=60;parts=[];$('score').textContent='分數 0';nextTarget();
+  $('ov').style.display='none';playing=true;last=performance.now();lastTick=last;
+};
+function loop(t){
+  requestAnimationFrame(loop);
+  const dpr=Math.min(devicePixelRatio||1,2),W=C.clientWidth,H=C.clientHeight;
+  if(C.width!==Math.round(W*dpr)){C.width=Math.round(W*dpr);C.height=Math.round(H*dpr)}
+  cx.setTransform(dpr,0,0,dpr,0,0);cx.clearRect(0,0,W,H);
+  const dt=Math.min((t-last)/1000,.1);last=t;
+  const vw=V.videoWidth,vh=V.videoHeight;
+  if(playing&&vw){
+    if(t-lastTick>=1000){lastTick=t;left--;$('time').textContent=left;if(left<=0)end()}
+    sx.drawImage(V,0,0,64,48);
+    const d=sx.getImageData(0,0,64,48).data,tg=COLORS[cur];
+    let n=0,mx=0,my=0,mxx=0,myy=0;
+    for(let y=0;y<48;y++)for(let x=0;x<64;x++){
+      const i=(y*64+x)*4,r=d[i]/255,g=d[i+1]/255,b=d[i+2]/255;
+      const mxv=Math.max(r,g,b),mnv=Math.min(r,g,b),l=(mxv+mnv)/2,df=mxv-mnv;
+      if(df<.05)continue;
+      const s=df/(1-Math.abs(2*l-1));
+      if(s<.45||l<.18||l>.85)continue;
+      let h=mxv===r?((g-b)/df)%6:mxv===g?(b-r)/df+2:(r-g)/df+4;h=(h*60+360)%360;
+      if(tg.t(h)){n++;mx+=x;my+=y;mxx+=x*x;myy+=y*y}
+    }
+    const frac=n/3072,sc=Math.max(W/vw,H/vh),dw=vw*sc,dh=vh*sc,ox=(W-dw)/2,oy=(H-dh)/2;
+    const hit=frac>.02;
+    // scan line
+    const sy=((t/900)%1)*H;cx.fillStyle='rgba(255,255,255,.25)';cx.fillRect(0,sy,W,2);
+    if(hit){
+      const ax=mx/n,ay=my/n,sdx=Math.sqrt(Math.max(mxx/n-ax*ax,0)),sdy=Math.sqrt(Math.max(myy/n-ay*ay,0));
+      const x0=ox+Math.max(0,ax-2*sdx-1)/64*dw,x1=ox+Math.min(64,ax+2*sdx+1)/64*dw,y0=oy+Math.max(0,ay-2*sdy-1)/48*dh,y1=oy+Math.min(48,ay+2*sdy+1)/48*dh;
+      cx.strokeStyle=tg.hex;cx.lineWidth=4;const L=Math.min(28,(x1-x0)/3,(y1-y0)/3);
+      cx.beginPath();
+      [[x0,y0,1,1],[x1,y0,-1,1],[x0,y1,1,-1],[x1,y1,-1,-1]].forEach(([x,y,a,b])=>{cx.moveTo(x+a*L,y);cx.lineTo(x,y);cx.lineTo(x,y+b*L)});
+      cx.stroke();
+      cx.fillStyle=tg.hex+'33';cx.fillRect(x0,y0,x1-x0,y1-y0);
+      const txt='偵測到 '+tg.n+' · '+Math.min(99,Math.round(frac*400))+'%';
+      cx.font='700 15px system-ui,sans-serif';const tw=cx.measureText(txt).width+16,ty=Math.max(y0-30,4);
+      cx.fillStyle=tg.hex;cx.fillRect(x0,ty,tw,26);cx.fillStyle='#fff';cx.fillText(txt,x0+8,ty+18);
+      // pulse ring at centroid
+      const px=ox+ax/64*dw,py=oy+ay/48*dh,pr=14+8*Math.sin(t/120);
+      cx.beginPath();cx.arc(px,py,pr,0,6.28);cx.stroke();
+      prog+=dt/.9;
+      if(prog>=1){score++;$('score').textContent='分數 '+score;burst(px,py,tg.hex);navigator.vibrate&&navigator.vibrate(60);nextTarget()}
+    }else prog=Math.max(0,prog-dt*1.5);
+    $('fill').style.width=Math.min(prog,1)*100+'%';
+  }
+  parts=parts.filter(p=>p.life>0);
+  for(const p of parts){p.x+=p.vx;p.y+=p.vy;p.vy+=.15;p.life-=dt*1.2;cx.globalAlpha=Math.max(p.life,0);cx.fillStyle=p.col;cx.beginPath();cx.arc(p.x,p.y,5,0,6.28);cx.fill()}
+  cx.globalAlpha=1;
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
